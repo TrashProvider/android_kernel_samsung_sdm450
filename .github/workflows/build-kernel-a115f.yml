@@ -1,0 +1,123 @@
+name: build kernel for Samsung A11 (SM-A115F)
+
+on:
+  workflow_dispatch:
+    inputs:
+      suffix:
+        description: 'Custom kernel suffix (eg. 4.9.319-@nleloc), leave blank for nothing'
+        required: false
+        default: '@nleloc'
+        type: string
+      integrate_xxksu:
+        description: "Integrate KSU (blackslashxx's fork)"
+        required: true
+        type: boolean
+        default: false
+      integrate_nomount:
+        description: 'Integrate NoMount'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
+            libncurses-dev ccache cpio zip unzip git python3 gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi
+
+          wget http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2.1_amd64.deb
+          sudo dpkg -i libtinfo5_6.2-0ubuntu2.1_amd64.deb || sudo apt-get install -f -y
+
+      - name: Setup Clang 13
+        run: |
+          mkdir -p ${GITHUB_WORKSPACE}/clang
+          cd ${GITHUB_WORKSPACE}/clang
+          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-13.0.1/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+          tar -xf clang+llvm-13.0.1-*.tar.xz --strip-components=1
+          rm clang+llvm-13.0.1-*.tar.xz
+          echo "${GITHUB_WORKSPACE}/clang/bin" >> $GITHUB_PATH
+
+          ${GITHUB_WORKSPACE}/clang/bin/clang --version
+          ${GITHUB_WORKSPACE}/clang/bin/ld.lld --version
+
+      - name: Integrate Modules (xxKSU & NoMount)
+        run: |
+          if [ "${{ inputs.integrate_xxksu }}" == "true" ]; then
+            echo "=> Integrating xxKSU..."
+            echo "Currently, this is only a place holder"
+
+          fi
+
+          if [ "${{ inputs.integrate_nomount }}" == "true" ]; then
+            echo "=> Integrating NoMount..."
+            echo "Currently, this is only a place holder"
+
+          fi
+
+      - name: Build Kernel
+        run: |
+          INPUT_SUFFIX="${{ inputs.suffix }}"
+          
+          if [ -z "$INPUT_SUFFIX" ]; then
+            CUSTOM_LOCALVERSION=""
+            echo "=> No SUFFIX input. Name will be standard (e.g., 4.9.319)"
+          else
+            CUSTOM_LOCALVERSION="-$INPUT_SUFFIX"
+            echo "=> SUFFIX is set to: $CUSTOM_LOCALVERSION"
+          fi
+
+          ARGS="O=out ARCH=arm64 CC=clang LLVM=1 CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          LOCALVERSION=$CUSTOM_LOCALVERSION CONFIG_BUILD_ARM64_DT_OVERLAY=y \
+          DTC_EXT=${GITHUB_WORKSPACE}/tools/dtc"
+
+          make $ARGS sdm450_sec_a11q_eur_open_defconfig
+          make $ARGS -j$(nproc) 2>&1 | tee build.log
+
+      - name: Upload Build Log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build.log
+          path: build.log
+          compression-level: 9
+
+      - name: Upload Raw Kernel Files (Image, Image.gz, dtb)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Raw-Kernel-Files
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/Image.gz
+            out/arch/arm64/boot/dts/**/*.dtb
+          compression-level: 9
+
+      - name: Package with AnyKernel3
+        run: |
+          echo "=> Cloning AnyKernel3..."
+          git clone https://github.com/osm0sis/AnyKernel3.git AK3 --depth=1
+          
+          echo "=> Copying uncompressed Image to AK3 folder..."
+          cp out/arch/arm64/boot/Image AK3/
+          
+          cd AK3
+          rm -rf .git
+          
+          echo "=> Zipping AnyKernel3..."
+          zip -r9 ../AnyKernel3-A115F.zip *
+
+      - name: Upload Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-A115F-Zip
+          path: AnyKernel3-A115F.zip
+          compression-level: 0
