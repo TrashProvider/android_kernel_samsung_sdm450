@@ -4,12 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       suffix:
-        description: 'Custom kernel suffix (eg. 4.9.319-@nleloc), leave blank for nothing'
+        description: 'Custom kernel suffix (eg. 4.9.319-@nleloc), leave blank for nothing, no space please'
         required: false
         default: '@nleloc'
         type: string
+      disable_ccache:
+        description: 'Disable CCache (Clean build)'
+        required: true
+        type: boolean
+        default: false
       integrate_xxksu:
-        description: "Integrate KSU (blackslashxx's fork)"
+        description: "Integrate KSU (backslashxx's fork)"
         required: true
         type: boolean
         default: false
@@ -34,14 +39,14 @@ jobs:
             libncurses-dev ccache cpio zip unzip git python3 gcc-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi
 
-          wget http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2.1_amd64.deb
+          wget --no-verbose https://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2.1_amd64.deb
           sudo dpkg -i libtinfo5_6.2-0ubuntu2.1_amd64.deb || sudo apt-get install -f -y
 
       - name: Setup Clang 13
         run: |
           mkdir -p ${GITHUB_WORKSPACE}/clang
           cd ${GITHUB_WORKSPACE}/clang
-          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-13.0.1/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+          wget --no-verbose https://github.com/llvm/llvm-project/releases/download/llvmorg-13.0.1/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
           tar -xf clang+llvm-13.0.1-*.tar.xz --strip-components=1
           rm clang+llvm-13.0.1-*.tar.xz
           echo "${GITHUB_WORKSPACE}/clang/bin" >> $GITHUB_PATH
@@ -49,23 +54,55 @@ jobs:
           ${GITHUB_WORKSPACE}/clang/bin/clang --version
           ${GITHUB_WORKSPACE}/clang/bin/ld.lld --version
 
-      - name: Integrate Modules (xxKSU & NoMount)
+      - name: Clone, apply KSU and NoMount
         run: |
           if [ "${{ inputs.integrate_xxksu }}" == "true" ]; then
             echo "=> Integrating xxKSU..."
-            echo "Currently, this is only a place holder"
+            git clone https://github.com/backslashxx/KernelSU.git xxksu --depth=1
+            ln -sf "$PWD/xxksu/kernel" drivers/kernelsu
 
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+            # CONFIG will be added at build kernel step
           fi
 
           if [ "${{ inputs.integrate_nomount }}" == "true" ]; then
             echo "=> Integrating NoMount..."
-            echo "Currently, this is only a place holder"
+            git clone https://github.com/maxsteeel/nomount.git nomount --depth=1
+            mkdir -p fs/nomount/
+            cp -rf nomount/kernel/src/* fs/nomount/
 
+            echo 'source "fs/nomount/Kconfig"' >> fs/Kconfig
+            echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
+            # Again, CONFIG will be added at build kernel step
           fi
 
-      - name: Build Kernel
+      - name: Restore ccache
+        if: ${{ !inputs.disable_ccache }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-a11-${{ github.run_id }}
+          restore-keys: ccache-a11-
+
+      - name: Setup CCache
+        if: ${{ !inputs.disable_ccache }}
         run: |
-          INPUT_SUFFIX="${{ inputs.suffix }}"
+            {
+              echo "CCACHE_DIR=$HOME/.cache/ccache"
+              echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+              echo "CCACHE_NOHASHDIR=true"
+              echo "CCACHE_COMPILERCHECK=string:clang-13.0.1"
+              echo "CCACHE_MAXSIZE=2G"
+              echo "USE_CCACHE=1"
+            } >> $GITHUB_ENV
+            ccache -z
+
+      - name: Build Kernel
+        env:
+            INPUT_SUFFIX: ${{ inputs.suffix }}
+        run: |
+          set -o pipefail
           
           if [ -z "$INPUT_SUFFIX" ]; then
             CUSTOM_LOCALVERSION=""
@@ -75,13 +112,54 @@ jobs:
             echo "=> SUFFIX is set to: $CUSTOM_LOCALVERSION"
           fi
 
-          ARGS="O=out ARCH=arm64 CC=clang LLVM=1 CLANG_TRIPLE=aarch64-linux-gnu- \
-          CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          LOCALVERSION=$CUSTOM_LOCALVERSION CONFIG_BUILD_ARM64_DT_OVERLAY=y \
-          DTC_EXT=${GITHUB_WORKSPACE}/tools/dtc"
+          if [ "$USE_CCACHE" = "1" ]; then
+              CC_CMD="ccache clang"
+          else
+              CC_CMD="clang"
+          fi
 
-          make $ARGS sdm450_sec_a11q_eur_open_defconfig
-          make $ARGS -j$(nproc) 2>&1 | tee build.log
+          ARGS=(
+            O=out
+            ARCH=arm64
+            CC="$CC_CMD"
+            LLVM=1
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LOCALVERSION="$CUSTOM_LOCALVERSION"
+            CONFIG_BUILD_ARM64_DT_OVERLAY=y
+            DTC_EXT="${GITHUB_WORKSPACE}/tools/dtc"
+          )
+
+          make "${ARGS[@]}" sdm450_sec_a11q_eur_open_defconfig
+
+          # If enable xxKSU
+          if [ "${{ inputs.integrate_xxksu }}" == "true" ]; then
+              ./scripts/config --file out/.config -e KSU \
+                    -e KSU_TAMPER_SYSCALL_TABLE
+          fi
+
+          # If enable NoMount
+          if [ "${{ inputs.integrate_nomount }}" == "true" ]; then
+              ./scripts/config --file out/.config -e NOMOUNT
+          fi
+
+          make "${ARGS[@]}" olddefconfig
+          
+          # Recheck
+          if [ "${{ inputs.integrate_xxksu }}" == "true" ]; then
+              grep -q '^CONFIG_KSU=y' out/.config || { echo "KSU can't be enabled!"; exit 1; }
+          fi
+          if [ "${{ inputs.integrate_nomount }}" == "true" ]; then
+              grep -q '^CONFIG_NOMOUNT=y' out/.config || { echo "NoMount can't be enabled!"; exit 1; }
+          fi
+
+          # Actually build
+          make "${ARGS[@]}" -j$(nproc) 2>&1 | tee build.log
+
+      - name: CCache stats
+        if: ${{ always() && !inputs.disable_ccache }}
+        run: ccache -s
 
       - name: Upload Build Log
         uses: actions/upload-artifact@v4
@@ -90,34 +168,32 @@ jobs:
           name: build.log
           path: build.log
           compression-level: 9
+          if-no-files-found: error
 
       - name: Upload Raw Kernel Files (Image, Image.gz, dtb)
         uses: actions/upload-artifact@v4
         with:
           name: Raw-Kernel-Files
+          if-no-files-found: error
           path: |
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/Image.gz
             out/arch/arm64/boot/dts/**/*.dtb
-          compression-level: 9
 
-      - name: Package with AnyKernel3
+      - name: Pack AnyKernel3
         run: |
           echo "=> Cloning AnyKernel3..."
-          git clone https://github.com/osm0sis/AnyKernel3.git AK3 --depth=1
+          git clone https://github.com/nleloc/AnyKernel3.git --depth=1
           
           echo "=> Copying uncompressed Image to AK3 folder..."
-          cp out/arch/arm64/boot/Image AK3/
+          cp out/arch/arm64/boot/Image AnyKernel3/
           
-          cd AK3
+          cd AnyKernel3
           rm -rf .git
-          
-          echo "=> Zipping AnyKernel3..."
-          zip -r9 ../AnyKernel3-A115F.zip *
 
-      - name: Upload Kernel Zip
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: AnyKernel3-A115F-Zip
-          path: AnyKernel3-A115F.zip
-          compression-level: 0
+          name: AnyKernel3-A115F
+          if-no-files-found: error
+          path: ./AnyKernel3
