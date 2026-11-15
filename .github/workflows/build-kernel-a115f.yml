@@ -127,6 +127,8 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             LOCALVERSION="$CUSTOM_LOCALVERSION"
+            KBUILD_BUILD_USER="nleloc"
+            KBUILD_BUILD_HOST="githubshit"
             CONFIG_BUILD_ARM64_DT_OVERLAY=y
             DTC_EXT="${GITHUB_WORKSPACE}/tools/dtc"
           )
