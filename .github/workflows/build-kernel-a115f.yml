@@ -58,7 +58,7 @@ jobs:
         run: |
           if [ "${{ inputs.integrate_xxksu }}" == "true" ]; then
             echo "=> Integrating xxKSU..."
-            git clone https://github.com/backslashxx/KernelSU.git xxksu --depth=1
+            git clone https://github.com/nleloc/xxksu.git xxksu --depth=1
             ln -sf "$PWD/xxksu/kernel" drivers/kernelsu
 
             echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
@@ -103,7 +103,7 @@ jobs:
             INPUT_SUFFIX: ${{ inputs.suffix }}
         run: |
           set -o pipefail
-          
+
           if [ -z "$INPUT_SUFFIX" ]; then
             CUSTOM_LOCALVERSION=""
             echo "=> No SUFFIX input. Name will be standard (e.g., 4.9.319)"
@@ -147,7 +147,7 @@ jobs:
           fi
 
           make "${ARGS[@]}" olddefconfig
-          
+
           # Recheck
           if [ "${{ inputs.integrate_xxksu }}" == "true" ]; then
               grep -q '^CONFIG_KSU=y' out/.config || { echo "KSU can't be enabled!"; exit 1; }
@@ -186,10 +186,10 @@ jobs:
         run: |
           echo "=> Cloning AnyKernel3..."
           git clone https://github.com/nleloc/AnyKernel3.git --depth=1
-          
+
           echo "=> Copying uncompressed Image to AK3 folder..."
           cp out/arch/arm64/boot/Image AnyKernel3/
-          
+
           cd AnyKernel3
           rm -rf .git
 
