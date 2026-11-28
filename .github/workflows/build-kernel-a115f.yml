@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       suffix:
-        description: 'Custom kernel suffix (eg. 4.9.319-@nleloc), leave blank for nothing, no space please'
+        description: 'Custom kernel suffix (eg. 4.9.319-nleloc), leave blank for nothing, no space please'
         required: false
-        default: '@nleloc'
+        default: 'nleloc'
         type: string
       disable_ccache:
         description: 'Disable CCache (Clean build)'
@@ -37,10 +37,7 @@ jobs:
           sudo apt update
           sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
             libncurses-dev ccache cpio zip unzip git python3 gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi
-
-          wget --no-verbose https://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2.1_amd64.deb
-          sudo dpkg -i libtinfo5_6.2-0ubuntu2.1_amd64.deb || sudo apt-get install -f -y
+            gcc-arm-linux-gnueabi libtinfo5
 
       - name: Setup Clang 13
         run: |
@@ -52,7 +49,6 @@ jobs:
           echo "${GITHUB_WORKSPACE}/clang/bin" >> $GITHUB_PATH
 
           ${GITHUB_WORKSPACE}/clang/bin/clang --version
-          ${GITHUB_WORKSPACE}/clang/bin/ld.lld --version
 
       - name: Clone, apply KSU and NoMount
         run: |
@@ -68,9 +64,8 @@ jobs:
 
           if [ "${{ inputs.integrate_nomount }}" == "true" ]; then
             echo "=> Integrating NoMount..."
-            git clone https://github.com/maxsteeel/nomount.git nomount --depth=1
-            mkdir -p fs/nomount/
-            cp -rf nomount/kernel/src/* fs/nomount/
+            git clone https://github.com/maxsteeel/nomount.git nomount
+            ln -sfn "$PWD/nomount/kernel/src" fs/nomount
 
             echo 'source "fs/nomount/Kconfig"' >> fs/Kconfig
             echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
@@ -88,12 +83,13 @@ jobs:
       - name: Setup CCache
         if: ${{ !inputs.disable_ccache }}
         run: |
+            CLANG_HASH=$(sha256sum "$(readlink -f "$(which clang)")" | awk '{print $1}')
             {
               echo "CCACHE_DIR=$HOME/.cache/ccache"
               echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
               echo "CCACHE_NOHASHDIR=true"
-              echo "CCACHE_COMPILERCHECK=string:clang-13.0.1"
-              echo "CCACHE_MAXSIZE=2G"
+              echo "CCACHE_COMPILERCHECK=string:$CLANG_HASH"
+              echo "CCACHE_MAXSIZE=500M"
               echo "USE_CCACHE=1"
             } >> $GITHUB_ENV
             ccache -z
@@ -122,7 +118,6 @@ jobs:
             O=out
             ARCH=arm64
             CC="$CC_CMD"
-            LLVM=1
             CLANG_TRIPLE=aarch64-linux-gnu-
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
@@ -170,7 +165,7 @@ jobs:
           name: build.log
           path: build.log
           compression-level: 9
-          if-no-files-found: error
+          if-no-files-found: ignore
 
       - name: Upload Raw Kernel Files (Image, Image.gz, dtb)
         uses: actions/upload-artifact@v4
